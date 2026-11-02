@@ -32,6 +32,9 @@ class Memory:
 
         self.log = []
         self.data = []
+        # Evidence addressing: id(data_item) -> "E001" (assigned in add_data)
+        self.data2eid: Dict[int, str] = {}
+        self._eid_counter = 0
         self.dependency: Dict[str, List[str]] = {} # parent_agent_id -> [child_agent_id]
         self.task_mapping = [] # [{task_key, agent_class_name, task_input, agent_id, agent_kwargs}, ...]
         self.data2embedding = {} # name+description -> embedding
@@ -65,6 +68,12 @@ class Memory:
                               for k, v in self.data2embedding.items()},
             'generated_analysis_tasks': self.generated_analysis_tasks,
             'generated_collect_tasks': self.generated_collect_tasks,
+            'data2eid': self.data2eid,
+            '_eid_counter': self._eid_counter,
+            # Positional E-ID list aligned with self.data: id() keys do not
+            # survive deserialization (object addresses change), so load()
+            # rebuilds data2eid from this list instead.
+            'eid_list': [self.data2eid.get(id(item), None) for item in self.data],
         }
         target_path = os.path.join(self.save_dir, checkpoint_name)
         tmp_path = target_path + '.tmp'
@@ -112,6 +121,19 @@ class Memory:
                                   for k, v in data2embedding_raw.items()}
             self.generated_analysis_tasks = memory_state.get('generated_analysis_tasks', [])
             self.generated_collect_tasks = memory_state.get('generated_collect_tasks', [])
+            # Restore evidence addressing. Prefer the positional eid_list to
+            # rebuild data2eid against the deserialized objects' fresh ids;
+            # fall back to the raw dict for checkpoints that predate it.
+            self._eid_counter = int(memory_state.get('_eid_counter', 0))
+            eid_list = memory_state.get('eid_list')
+            if eid_list is not None:
+                self.data2eid = {
+                    id(item): eid
+                    for item, eid in zip(self.data, eid_list)
+                    if eid is not None
+                }
+            else:
+                self.data2eid = memory_state.get('data2eid', {})
             # Reset agent caches; they will be reloaded on demand
             self._agents = {}
             self._restored_agents = {}
@@ -291,7 +313,21 @@ class Memory:
         
     def add_data(self, data: Any):
         self.data.append(data)
+        # Assign a stable evidence ID (E001, E002, ...) at ingestion time
+        self._eid_counter += 1
+        self.data2eid[id(data)] = f"E{self._eid_counter:03d}"
         return True
+
+    def get_eid(self, data_item) -> str:
+        """Return the E-ID assigned to a stored data item ("" if unknown)."""
+        return self.data2eid.get(id(data_item), "")
+
+    def get_evidence_by_eid(self, eid: str):
+        """Return the stored data item assigned to an E-ID (None if unknown)."""
+        for item in self.data:
+            if self.data2eid.get(id(item)) == eid:
+                return item
+        return None
 
     def add_dependency(self, child_id: str, parent_id: str):
         if parent_id not in self.dependency:

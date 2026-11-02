@@ -70,8 +70,12 @@ yarn-error.log*
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
+# Superpowers plan workspace (scratch ledger)
+.superpowers/
+
 # Testing
 .pytest_cache/
+.pytest_tmp/
 .coverage
 htmlcov/
 
