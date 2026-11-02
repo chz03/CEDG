@@ -14,6 +14,12 @@ from src.agents.report_generator.report_class import Report, Section
 from src.utils.helper import extract_markdown, get_md_img
 from src.utils.index_builder import IndexBuilder
 from src.utils.figure_helper import draw_kline_chart
+from src.cedg.draft_parser import parse_draft, SOURCE_RE, VAR_RE
+
+# Max times a section draft may be bounced for structural violations before the
+# system force-accepts it (flagged unresolved in the CEDG) to avoid token burn.
+MAX_DRAFT_REJECTS = 2
+
 class ReportGenerator(BaseAgent):
     AGENT_NAME = 'report_generator'
     AGENT_DESCRIPTION = 'a agent that can generate report from the data'
@@ -205,13 +211,13 @@ class ReportGenerator(BaseAgent):
         }
     
     async def _handle_report_action(self, action_content: str):
-        """Handle a 'final/report' action."""
-        return {
-            "action": "report",
-            "action_content": action_content,
-            "result": action_content,
-            "continue": False,
-        }
+        """Handle a 'final/report' action.
+
+        General-type prompts deliver section drafts via <report>, so they go
+        through the same structural gate as <draft>.
+        """
+        return await self._gate_draft(action_content, tag='report')
+
     async def _handle_outline_action(self, action_content: str):
         """Handle a 'outline' action."""
         return {
@@ -220,15 +226,57 @@ class ReportGenerator(BaseAgent):
             "result": action_content,
             "continue": False,
         }
-    
+
     async def _handle_draft_action(self, action_content: str):
-        """Handle a 'outline' action."""
-        return {
-            "action": "draft",
-            "action_content": action_content,
-            "result": action_content,
-            "continue": False,
-        }
+        """Handle a 'draft' action: validate pointers, bounce bad drafts."""
+        return await self._gate_draft(action_content, tag='draft')
+
+    async def _gate_draft(self, action_content: str, tag: str):
+        """Structural gate for section drafts (pointer-constrained writing).
+
+        Hard errors (dangling E-IDs / VAR names, bare numbers, malformed
+        citations) bounce the draft back for rewriting, up to
+        MAX_DRAFT_REJECTS times per section; afterwards the draft is
+        force-accepted and flagged for the CEDG as unresolved.
+        """
+        parsed = parse_draft(
+            action_content,
+            valid_eids=set(self.memory.data2eid.values()),
+            valid_vars=set(getattr(self, 'var_registry', {}).keys()),
+        )
+        section_idx = getattr(self, '_current_section_idx', None)
+        reject_counts = getattr(self, '_draft_reject_counts', None)
+        if reject_counts is None:
+            reject_counts = self._draft_reject_counts = {}
+
+        if parsed.errors:
+            reject_counts[section_idx] = reject_counts.get(section_idx, 0) + 1
+            if reject_counts[section_idx] <= MAX_DRAFT_REJECTS:
+                feedback = (
+                    "Your draft was REJECTED. Fix the following errors and "
+                    f"output <{tag}> again:\n" + "\n".join(f"- {e}" for e in parsed.errors)
+                )
+                self.logger.info(
+                    f"[Gate] Section {section_idx} draft bounced "
+                    f"({reject_counts[section_idx]}/{MAX_DRAFT_REJECTS}): {len(parsed.errors)} errors"
+                )
+                return {'action': tag, 'action_content': action_content,
+                        'result': feedback, 'continue': True}
+            # Over the cap: accept to avoid an endless rewrite loop; the claims
+            # stay flagged so step 6 marks them nu="unresolved" in the CEDG.
+            self._last_draft_forced = True
+            self.logger.warning(
+                f"[Gate] Section {section_idx} draft force-accepted after "
+                f"{MAX_DRAFT_REJECTS} rejections; claims flagged unresolved"
+            )
+        else:
+            self._last_draft_forced = False
+            reject_counts[section_idx] = 0
+
+        self.section_claims = getattr(self, 'section_claims', {})
+        self.section_claims[section_idx] = parsed.claims
+        return {'action': tag, 'action_content': action_content,
+                'result': action_content, 'continue': False}
     
     async def _final_polish(self, section_input_data, draft_section: str):
         all_analysis_result = self.memory.get_analysis_result()
@@ -246,6 +294,18 @@ class ReportGenerator(BaseAgent):
         final_message = [{"role": "user", "content": final_prompt}]
         output = await self.llm.generate(messages = final_message)
         final_section = extract_markdown(output)
+
+        # Pointer-set diff: the polish step must not add OR drop any pointer
+        # token (⟨VAR:…⟩ / [Source:E…]). If the sets differ in either
+        # direction, discard the polish result. (A one-way subset check would
+        # silently let polish delete citations/placeholders.)
+        def _ptr_set(text: str) -> set:
+            return set(SOURCE_RE.findall(text)) | set(VAR_RE.findall(text))
+        if _ptr_set(final_section) != _ptr_set(draft_section):
+            self.logger.warning(
+                "[Polish] pointer tokens changed by final polish; keeping the draft version"
+            )
+            final_section = draft_section
         return final_section
     
     async def _replace_image_path(self, report):
@@ -668,6 +728,10 @@ class ReportGenerator(BaseAgent):
             'phase': getattr(self, '_phase', 'outline'),
             'section_index': getattr(self, '_section_index_done', 0),
             'post_stage': getattr(self, '_post_stage', 0),
+            'var_registry': getattr(self, 'var_registry', {}),
+            'section_claims': getattr(self, 'section_claims', {}),
+            'current_section_idx': getattr(self, '_current_section_idx', None),
+            'draft_reject_counts': getattr(self, '_draft_reject_counts', {}),
         }
 
     def _load_persist_extra_state(self, state: Dict[str, Any]):
@@ -694,6 +758,13 @@ class ReportGenerator(BaseAgent):
                 self._post_stage = int(post_stage)
             except Exception:
                 pass
+
+        # CEDG renovation state (checkpoint resume support)
+        self.var_registry = extra.get('var_registry') or state.get('var_registry') or {}
+        self.section_claims = extra.get('section_claims') or state.get('section_claims') or {}
+        if extra.get('current_section_idx') is not None or state.get('current_section_idx') is not None:
+            self._current_section_idx = extra.get('current_section_idx', state.get('current_section_idx'))
+        self._draft_reject_counts = extra.get('draft_reject_counts') or state.get('draft_reject_counts') or {}
         
         enable_chart = extra.get('enable_chart') or state.get('enable_chart')
         if enable_chart is not None:
@@ -873,6 +944,7 @@ class ReportGenerator(BaseAgent):
                     continue
                 section_input_data = input_data.copy()
                 section_input_data['section_outline'] = section.outline
+                self._current_section_idx = idx
                 self.logger.info(f"[Phase1] Section {idx+1}/{len(report.sections)} start")
                 
                 # Prepare executor with data access functions for agentic workflow
