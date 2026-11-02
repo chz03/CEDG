@@ -62,6 +62,7 @@ def make_config(tmp_path, dummy_env):
             'output_dir': str(tmp_path / 'outputs'),
             'target_name': 'pytest_target',
             'target_type': target_type,
+            'reference_doc_path': 'src/template/report_template.docx',
             # Offline LLM entries; generation is never called in unit tests.
             'llm_config_list': [
                 {

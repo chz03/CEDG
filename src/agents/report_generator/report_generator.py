@@ -18,6 +18,7 @@ from src.utils.figure_helper import draw_kline_chart
 from src.cedg.draft_parser import parse_draft, SOURCE_RE, VAR_RE
 from src.cedg.graph import CEDG, ClaimNode
 from src.cedg.verifiers import run_verification
+from src.cedg.renderer import render_vars
 
 # Max times a section draft may be bounced for structural violations before the
 # system force-accepts it (flagged unresolved in the CEDG) to avoid token burn.
@@ -790,7 +791,20 @@ class ReportGenerator(BaseAgent):
         return report
 
     async def _render_report(self, input_data, report):
-        """Render the report to md/docx/pdf on disk (post-stage 5)."""
+        """Render the report to md/docx/pdf on disk (post-stage 5).
+
+        Render-time variable substitution happens here and only here: the
+        drafts carried ⟨VAR:name⟩ placeholders all the way through polishing,
+        citation translation and verification; real values enter the text at
+        the last moment (generation/rendering decoupling).
+        """
+        registry = getattr(self, 'var_registry', {})
+        for section in report.sections:
+            if section._content:
+                section._content = [render_vars(p, registry) for p in section._content]
+        if report.abstract:
+            report.abstract = render_vars(report.abstract, registry)
+
         working_dir = self.config.config['working_dir']
         md_path = os.path.join(working_dir, f'{report.title}.md')
         docx_path = os.path.join(working_dir, f'{report.title}.docx')
