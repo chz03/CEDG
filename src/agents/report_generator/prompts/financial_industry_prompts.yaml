@@ -294,6 +294,21 @@ data_api: |
   print(insight)
   ```
 
+  ### Interface 4: _set_var (MANDATORY before citing any number in prose)
+  Register a derived variable. Any computed result that will appear in the report MUST be registered first; the draft then cites it as `⟨VAR:name⟩` and never writes the raw number.
+  - **Parameters**:
+    - `name` (str) – snake_case variable name, e.g. `revenue_2024`.
+    - `value` – the computed value.
+    - `depends_on` (list[str]) – E-IDs of the evidence used, e.g. `["E012"]` (see the Evidence IDs in the data context).
+    - `_code` (str) – the computation expression, kept for later programmatic re-verification.
+  - **Returns**: the value unchanged.
+  ```python
+  df = get_data(0)
+  rev_2024 = float(df.loc[df['year'] == 2024, 'revenue'].iloc[0])
+  _set_var("revenue_2024", rev_2024, depends_on=["E001"], _code="float(df.loc[df['year']==2024,'revenue'].iloc[0])")
+  ```
+  **Rule: a number may appear in the final draft ONLY as `⟨VAR:name⟩` where `name` was registered via `_set_var`.**
+
 # outline_draft: |
 #   You are a top-tier Senior Financial Research Analyst at an investment bank. Your core expertise lies in dissecting complex information, identifying core investment logic, and constructing persuasive research reports that drive major decisions. You are renowned for your rigorous logic, critical thinking, and ability to present clear, data-driven narratives.
 

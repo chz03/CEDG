@@ -72,6 +72,9 @@ class ReportGenerator(BaseAgent):
         self.TABLE_BEAUTIFY_PROMPT = self.prompt_loader.get_prompt('table_beautify')
         
         self.use_embedding_name = use_embedding_name
+        # Derived-variable registry: name -> {"value":..., "code":..., "depends_on":[eid,...]}
+        # Populated by _set_var() from <execute> code during section writing.
+        self.var_registry: Dict[str, Dict[str, Any]] = {}
         # Phase checkpoints: outline → sections → post_process
         self._phase: str = 'outline'
         # Section-level progress counter
@@ -130,9 +133,15 @@ class ReportGenerator(BaseAgent):
             }))
             return output['final_result']
         
+        def _set_var(name: str, value, depends_on: list = [], _code: str = ""):
+            """Register a derived variable so prose can cite ⟨VAR:name⟩."""
+            self.var_registry[name] = {"value": value, "depends_on": depends_on, "code": _code}
+            return value
+
         self.code_executor.set_variable("get_data", _get_data)
         self.code_executor.set_variable("get_analysis_result", _get_analysis_result)
         self.code_executor.set_variable("get_data_from_deep_search", _get_deepsearch_result)
+        self.code_executor.set_variable("_set_var", _set_var)
         
     
     async def _prepare_init_prompt(self, input_data: dict) -> list[dict]:

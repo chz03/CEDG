@@ -85,6 +85,32 @@ def memory(make_config):
     return Memory(make_config())
 
 
+class _FakeTool:
+    """Stand-in tool so BaseAgent skips DeepSearchAgent instantiation."""
+    id = 'tool_fake_1'
+
+
+@pytest.fixture
+def make_report_generator(make_config, memory):
+    from src.agents.report_generator.report_generator import ReportGenerator
+
+    def _make(target_type: str = 'financial_company') -> ReportGenerator:
+        return ReportGenerator(
+            config=make_config(target_type),
+            tools=[_FakeTool()],
+            use_llm_name='deepseek-chat',
+            enable_code=True,
+            memory=memory,
+        )
+
+    return _make
+
+
+@pytest.fixture
+def report_generator(make_report_generator):
+    return make_report_generator()
+
+
 def make_tool_result(name: str, value=None) -> ToolResult:
     return ToolResult(
         name=name,
