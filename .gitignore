@@ -84,3 +84,6 @@ venv/
 .venv/
 ENV/
 evaluations/
+
+# Large demo video - kept locally, not for remote
+assets/demo.mp4
