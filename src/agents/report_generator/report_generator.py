@@ -7,14 +7,16 @@ import subprocess
 import numpy as np
 import docx2pdf
 from src.agents.base_agent import BaseAgent
-from src.agents import DeepSearchAgent
+from src.agents import DeepSearchAgent, AnalysisResult
 from src.tools.web.web_crawler import ClickResult
+from src.tools.web.base_search import SearchResult
 from src.tools import ToolResult, get_tool_categories, get_tool_by_name
 from src.agents.report_generator.report_class import Report, Section
 from src.utils.helper import extract_markdown, get_md_img
 from src.utils.index_builder import IndexBuilder
 from src.utils.figure_helper import draw_kline_chart
 from src.cedg.draft_parser import parse_draft, SOURCE_RE, VAR_RE
+from src.cedg.graph import CEDG, ClaimNode
 
 # Max times a section draft may be bounced for structural violations before the
 # system force-accepts it (flagged unresolved in the CEDG) to avoid token burn.
@@ -81,6 +83,8 @@ class ReportGenerator(BaseAgent):
         # Derived-variable registry: name -> {"value":..., "code":..., "depends_on":[eid,...]}
         # Populated by _set_var() from <execute> code during section writing.
         self.var_registry: Dict[str, Dict[str, Any]] = {}
+        # Claim–Evidence Dependency Graph, built as sections are accepted
+        self.cedg = CEDG()
         # Phase checkpoints: outline → sections → post_process
         self._phase: str = 'outline'
         # Section-level progress counter
@@ -275,8 +279,54 @@ class ReportGenerator(BaseAgent):
 
         self.section_claims = getattr(self, 'section_claims', {})
         self.section_claims[section_idx] = parsed.claims
+        # Land the accepted claims on the CEDG (sup/derive edges, evidence nodes)
+        self._cedg_ingest_claims(section_idx, parsed.claims)
         return {'action': tag, 'action_content': action_content,
                 'result': action_content, 'continue': False}
+
+    def _cedg_ingest_claims(self, section_idx, claims):
+        """Add a section's accepted claims to the CEDG.
+
+        Claims from a force-accepted draft (over the reject cap) are flagged
+        nu="unresolved" per the checklist's loop-protection note.
+        """
+        forced = bool(getattr(self, '_last_draft_forced', False))
+        for claim in claims:
+            graph_cid = f"S{(section_idx if section_idx is not None else 0) + 1:02d}-{claim.cid}"
+            nu = 'unresolved' if forced else 'pending'
+            self.cedg.add_claim(ClaimNode(
+                cid=graph_cid,
+                ctype=claim.ctype,
+                text=claim.text,
+                var_names=list(claim.var_names),
+                nu=nu,
+            ))
+            for eid in claim.source_eids:
+                self._cedg_ensure_evidence(eid)
+                self.cedg.add_edge(eid, graph_cid, 'sup')
+            for var_name in claim.var_names:
+                depends_on = self.var_registry.get(var_name, {}).get('depends_on', [])
+                for eid in depends_on:
+                    self._cedg_ensure_evidence(eid)
+                    self.cedg.add_edge(eid, graph_cid, 'derive')
+
+    def _cedg_ensure_evidence(self, eid: str):
+        item = self.memory.get_evidence_by_eid(eid)
+        if item is None:
+            # cited E-ID vanished (e.g. resumed run without that evidence)
+            self.cedg.add_evidence(eid, kind='unknown', ref_repr='<missing evidence>')
+            return
+        if isinstance(item, AnalysisResult):
+            kind = 'analysis'
+        elif isinstance(item, (SearchResult, ClickResult)):
+            kind = 'web'
+        else:
+            kind = 'tool_result'
+        try:
+            ref_repr = item.brief_str()
+        except Exception:
+            ref_repr = str(item)[:200]
+        self.cedg.add_evidence(eid, kind=kind, ref_repr=ref_repr)
     
     async def _final_polish(self, section_input_data, draft_section: str):
         all_analysis_result = self.memory.get_analysis_result()
@@ -732,6 +782,7 @@ class ReportGenerator(BaseAgent):
             'section_claims': getattr(self, 'section_claims', {}),
             'current_section_idx': getattr(self, '_current_section_idx', None),
             'draft_reject_counts': getattr(self, '_draft_reject_counts', {}),
+            'cedg': getattr(self, 'cedg', None),
         }
 
     def _load_persist_extra_state(self, state: Dict[str, Any]):
@@ -765,6 +816,9 @@ class ReportGenerator(BaseAgent):
         if extra.get('current_section_idx') is not None or state.get('current_section_idx') is not None:
             self._current_section_idx = extra.get('current_section_idx', state.get('current_section_idx'))
         self._draft_reject_counts = extra.get('draft_reject_counts') or state.get('draft_reject_counts') or {}
+        restored_cedg = extra.get('cedg') or state.get('cedg')
+        if isinstance(restored_cedg, CEDG):
+            self.cedg = restored_cedg
         
         enable_chart = extra.get('enable_chart') or state.get('enable_chart')
         if enable_chart is not None:
@@ -1010,6 +1064,16 @@ class ReportGenerator(BaseAgent):
             report = await self.post_process_report(input_data, report)
             self.memory.save()
             self.logger.info("[Phase2] Completed post processing")
+            # Persist the CEDG next to the report as the auditable trace
+            try:
+                cedg_path = os.path.join(self.config.config['working_dir'], 'cedg.json')
+                self.cedg.to_json(cedg_path)
+                self.logger.info(
+                    f"[CEDG] wrote {cedg_path}: "
+                    f"{len(self.cedg.claims)} claims, {len(self.cedg.edges)} edges"
+                )
+            except Exception as e:
+                self.logger.error(f"Failed to write cedg.json: {e}", exc_info=True)
 
         return report
     
