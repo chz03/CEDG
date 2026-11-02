@@ -13,7 +13,9 @@ section_writing: |
   Writing requirements
   1. Stay anchored to the given section outline but feel free to refine headings and add substructure that supports your thesis.
   2. Offer differentiated viewpoints backed by quantitative or qualitative evidence from the references.
-  3. Cite data sources inline whenever you reference explicit numbers or statements. Use the format `[Source: ...]` at the end of sentences where you reference data, statistics, or claims. Include the name of the webpage, dataset, report, or data source directly (e.g., `[source: Official Government Report]`, `[source: Academic Paper 2024]`, `[source: Industry Research Report]`).
+  3. Cite evidence with the E-ID shown in the data context, in the exact form `[Source:E012]` at the end of the sentence — **NEVER write source names** (no webpage/dataset/report names); drafts are machine-checked and invalid citations are rejected.
+  3a. **No raw numbers (zero-number writing):** the draft must not contain any literal number (years such as 2024 and section numbers excepted). Every amount, ratio, count, or percentage must be a `⟨VAR:var_name⟩` placeholder whose variable was registered beforehand via `_set_var(...)` in `<execute>`.
+  3b. **Inference marking:** judgment sentences not directly grounded in data must end with `[INFER]`.
   4. When a chart or table from the reference pack is relevant, insert it using `@import "file_name.ext"` on its own line, surrounded by blank lines. Do not invent filenames; reuse only the supplied ones. Tables created during drafting should use standard Markdown tables.
 
   Inputs
@@ -70,7 +72,7 @@ section_writing_wo_chart: |
      - If {target_language} is English (en): Prefer English-language sources when available. Translate non-English sources to English.
      - If {target_language} is Chinese (zh): You may use sources in any language, but present all findings in Chinese.
      - NEVER mix languages in the report body - keep content consistently in {target_language}
-  3. **Citation Format**: Use `[Source: ...]` at the end of sentences where you reference data, statistics, or claims. Include the name of the source directly in {target_language} (e.g., `[Source: Official Government Report]`, `[Source: Industry Analysis 2024]`).
+  3. **Citation Format**: Cite evidence with the E-ID shown in the data context, in the exact form `[Source:E012]` at the end of the sentence — **NEVER write source names**; drafts are machine-checked and invalid citations are rejected. Additionally: **no raw numbers** — every amount, ratio, count, or percentage must be a `⟨VAR:var_name⟩` placeholder registered beforehand via `_set_var(...)` in `<execute>` (years such as 2024 excepted). Judgment sentences not directly grounded in data must end with `[INFER]`.
 
   ### Writing Quality Standards
   1. **Readability**:
@@ -94,6 +96,9 @@ section_writing_wo_chart: |
   - [ ] No abrupt transitions or logical gaps
   - [ ] All text is in English (including source citations)
   - [ ] Each major claim has a cited source
+  - [ ] Every `[Source:E…]` ID appears in the Evidence list of the data context (no source names, no invented IDs)
+  - [ ] Every number sits inside a `⟨VAR:…⟩` placeholder registered via `_set_var`; no bare numbers (years excepted)
+  - [ ] Unsupported judgment sentences carry `[INFER]`
   - [ ] The section flows naturally from its introduction to conclusion
 
   Inputs
@@ -118,7 +123,7 @@ final_polish: |
   3. **Validate data** – verify that each claim is grounded in the provided datasets or analysis excerpts, adjusting wording if evidence is weak.
   4. **Integrate visuals** – place the required charts or tables using `@import "file_name.ext"` (names must match the supplied assets exactly). Insert each visual on its own line between paragraphs. Markdown tables may be included where helpful.
   5. **Refine headings** – use `##` for section titles and `###` for subsections; no H1/H4 levels or numbered headings.
-  6. **Add citations** – ensure every data point, statistic, or claim from external sources includes a citation in the format `[Source: ...]` at the end of the sentence.
+  6. **Add citations** – ensure every data point, statistic, or claim from external sources keeps its `[Source:E…]` evidence-ID citation at the end of the sentence.
   7. **Check completeness** – ensure all points from the original section outline are addressed with no gaps or incomplete thoughts.
 
   ## Language Requirements (CRITICAL)
@@ -144,6 +149,7 @@ final_polish: |
   - **Completeness**: no placeholder text, incomplete sentences, or missing sub-points.
 
   ## Output Rules
+  **Pointer-token preservation (HARD RULE):** The draft contains machine-checked tokens: `⟨VAR:name⟩` placeholders, `[Source:E…]` evidence citations, and `[INFER]` markers. Copy them into the polished text EXACTLY as they are — never add, delete, rewrite, or move any of them, and never replace a `⟨VAR:…⟩` with a real number. Polishing applies to the surrounding prose only.
   - Return solely in Markdown prose (no bullet lists unless already part of the draft).
   - Maintain the original section/subsection hierarchy; each `###` block should contain multiple paragraphs of substantive analysis.
   - Ensure every paragraph contributes meaningful content (no filler or repetition).

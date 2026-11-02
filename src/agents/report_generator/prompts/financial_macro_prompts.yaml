@@ -13,7 +13,9 @@ section_writing: |
   Writing requirements
   1. Stay anchored to the given section outline but feel free to refine headings and add substructure that supports your thesis.
   2. Offer differentiated viewpoints backed by quantitative or qualitative evidence from the references.
-  3. Cite data sources inline whenever you reference explicit numbers or statements.
+  3. Cite evidence with the E-ID shown in the data context, in the exact form `[Source:E012]` at the end of the sentence — **NEVER write source names**; drafts are machine-checked and invalid citations are rejected.
+  3a. **No raw numbers (zero-number writing):** the draft must not contain any literal number (years such as 2024 and section numbers excepted). Every amount, ratio, count, or percentage must be a `⟨VAR:var_name⟩` placeholder whose variable was registered beforehand via `_set_var(...)` in `<execute>`.
+  3b. **Inference marking:** judgment sentences not directly grounded in data must end with `[INFER]`.
   4. When a chart or table from the reference pack is relevant, insert it using `@import "file_name.ext"` on its own line, surrounded by blank lines. Do not invent filenames; reuse only the supplied ones. Tables created during drafting should use standard Markdown tables.
 
   Inputs
@@ -43,6 +45,7 @@ final_polish: |
   - Depth: interpret why the data matters rather than simply repeating figures.
 
   Output rules
+  **Pointer-token preservation (HARD RULE):** The draft contains machine-checked tokens: `⟨VAR:name⟩` placeholders, `[Source:E…]` evidence citations, and `[INFER]` markers. Copy them into the polished text EXACTLY as they are — never add, delete, rewrite, or move any of them, and never replace a `⟨VAR:…⟩` with a real number. Polishing applies to the surrounding prose only.
   - Return solely in Markdown prose (no bullet lists unless already part of the draft).
   - Maintain the original section/subsection hierarchy; each `###` block should contain multiple paragraphs of substantive analysis.
   - Reference pack inputs:

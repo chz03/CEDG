@@ -9,8 +9,10 @@ section_writing: |
   1.  **Scope Control:** This is a middle chapter. **DO NOT** write broad introductions, executive summaries, or concluding remarks. Start directly with the section content.
   2.  **Strict Data Grounding:** All claims, insights, and arguments must be strictly derived from the data retrieved via APIs. **DO NOT** use external knowledge or hallucinate numbers.
   3.  **Chart Integration:** Embed charts strictly using `@import "filename"`. Filenames must exactly match the analysis output.
-  4.  **Citation:** Every data point must be cited using `[Source: Name]`. Make sure the name should be the original source (web page name, data name, etc.),  don't cite the analysis report id or data id as the source.
-  5.  **Language:** Write solely in {target_language}.
+  4.  **Citation by Evidence ID:** Every data point must be cited using the evidence ID given in the data context, in the exact form `[Source:E012]`. **NEVER write source names** — only E-IDs (e.g. `[Source:E001]`).
+  5.  **No Raw Numbers (zero-number writing):** The draft body must NOT contain any literal number (years such as 2024 and section numbers are the only exceptions). Every amount, ratio, count, or percentage must be written as the placeholder `⟨VAR:var_name⟩` (e.g. `营收 ⟨VAR:revenue_2024⟩ 亿元`). Each placeholder must reference a variable registered beforehand via `_set_var(...)` in `<execute>`.
+  6.  **Inference marking:** A sentence stating your own judgment rather than a direct data fact must end with `[INFER]`.
+  7.  **Language:** Write solely in {target_language}.
   
   # Tool Capability
   Available Data APIs:
@@ -35,6 +37,10 @@ section_writing: |
       * Ensure professional, objective financial tone.
       * Make sure every claim in the draft is supported by the data. Don't hallucinate any data.
       * Since you are writing a middle section of a report, you don't need to write a conclusion part.
+  3.  **Pre-submit self-check (mandatory — drafts failing it are rejected automatically):**
+      * Every `[Source:E…]` uses an E-ID listed in the data context (no invented IDs, no source names).
+      * Every number is inside a `⟨VAR:…⟩` placeholder registered via `_set_var`; no bare numbers (years excepted).
+      * Judgment sentences without direct evidence end with `[INFER]`.
   
   # Context Inputs
   **Report Theme:** {report_theme}
@@ -115,10 +121,17 @@ section_writing_wo_chart: |
   The draft you write must meet the following requirements:
   1. Write the section focusing on the given report theme and the corresponding section outline. Ensure the content is rich. However, do not be rigidly constrained by the outline; appropriate expansion is encouraged. The section titles in the outline need to be modified, and appropriate sub-sections and titles should be created around your own arguments.
   2. Include unique viewpoints. The draft must contain your unique understanding of the report theme, as well as the analysis and utilization of the reference materials.
-  3. Ensure viewpoints are supported by data. If corresponding data is used, please cite the source of the data.
+  3. Ensure viewpoints are supported by data. Cite evidence with the E-ID shown in the data context, in the exact form `[Source:E012]` — **NEVER write source names**; drafts are machine-checked and invalid citations are rejected.
+  3a. **No raw numbers (zero-number writing):** the draft must not contain any literal number (years such as 2024 and section numbers excepted). Every amount, ratio, count, or percentage must be a `⟨VAR:var_name⟩` placeholder whose variable was registered in an earlier `<execute>` step via `_set_var(...)`.
+  3b. **Inference marking:** judgment sentences not directly grounded in data must end with `[INFER]`.
   4. Insert Charts and References: The analysis report provides image names and corresponding descriptions. When writing the report, please discuss the content in conjunction with the chart information, focusing on text-image consistency. You must insert the relevant images and tables into the final report. For images, use the format @import "....". **Please keep the referenced image filenames exactly the same as those in the provided data analysis report; you are strictly prohibited from generating them yourself.** Tables should be inserted directly using Markdown table syntax. Charts/Images should be inserted in the blank spaces between paragraphs, with newlines before and after; do not import charts in the middle of paragraph text.
 
   Note: The content inside the quotes of your outputted @import statement must be exactly the same as in the given analysis report.
+
+  **Before outputting `</draft>`, self-check (drafts failing this are rejected automatically):**
+  - Every `[Source:E…]` ID appears in the Evidence list of the data context (no source names, no invented IDs).
+  - Every number in the prose sits inside a `⟨VAR:…⟩` placeholder registered via `_set_var`; no bare numbers (years excepted).
+  - Unsupported judgment sentences carry `[INFER]`.
 
   # Task Input
 
@@ -164,12 +177,14 @@ final_polish: |
 
   # Output Requirements
 
+  **Pointer-token preservation (HARD RULE):** The draft contains machine-checked tokens: `⟨VAR:name⟩` placeholders, `[Source:E…]` evidence citations, and `[INFER]` markers. You MUST copy them into the polished text EXACTLY as they are — never add, delete, rewrite, or move any of them, and never replace a `⟨VAR:…⟩` with a real number. Polishing applies to the surrounding prose only.
+
   1. **Format Requirements:** Use Markdown format. Chapter titles must use H2, sub-chapter titles must use H3, and paragraphs must be separated by newlines. **The use of bullet point lists is prohibited.**
   2. **Image Insertion:** The analysis report provides image names and descriptions. Use the `@import "..."` method to insert existing images into the blank spaces between paragraphs, with newlines before and after. Do not import charts in the middle of paragraph text. Ensure the report is rich in both text and images. If inserting a table, place it directly in the space between paragraphs with a title; do not use table numbers.
   3. **Return Format:** Return all content of the chapter in **Markdown format**. **Do not output any irrelevant content such as "Here is the content of this chapter".** Your writing must fit the style and requirements of a research report. **Use paragraph form as much as possible and avoid bullet points** to ensure flow and professionalism.
   4. **Chapter Title Requirements:** Your content must conform to the structure of Level 2 and Level 3 headers based on the provided outline. Under Level 2 headers, write a summary or introductory paragraph. Under each Level 3 header, there must be at least **5-10 paragraphs**, with each paragraph containing at least **500 words** to detail the argument, resulting in rich content. Do not generate Level 1 or Level 4 headers. Do not use serial numbers inside titles (e.g., "(I)" or "1.").
   5. **Time Requirements:** Pay attention to the current time when writing to ensure the timeline is reasonable. The report's charts should be as rich as possible.
-  6. **Citation Requirements:** During writing, simultaneous citation of existing analysis results (text, images, tables) from the data analysis report is required. Citation content must match the references at the end of each sentence in the analysis report, using the format `[Source: ....]`. Do not modify this unauthorizedly.
+  6. **Citation Requirements:** During writing, simultaneous citation of existing analysis results (text, images, tables) from the data analysis report is required. Citation content must match the references at the end of each sentence in the analysis report, keeping the exact `[Source:E…]` evidence-ID form. Do not modify these tokens unauthorizedly.
 
   **Note:** The content inside the quotes of the `@import` statement you output must be exactly the same as in the given analysis report.
 
