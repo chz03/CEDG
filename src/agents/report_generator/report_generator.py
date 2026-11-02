@@ -17,6 +17,7 @@ from src.utils.index_builder import IndexBuilder
 from src.utils.figure_helper import draw_kline_chart
 from src.cedg.draft_parser import parse_draft, SOURCE_RE, VAR_RE
 from src.cedg.graph import CEDG, ClaimNode
+from src.cedg.verifiers import run_verification
 
 # Max times a section draft may be bounced for structural violations before the
 # system force-accepts it (flagged unresolved in the CEDG) to avoid token burn.
@@ -85,11 +86,14 @@ class ReportGenerator(BaseAgent):
         self.var_registry: Dict[str, Dict[str, Any]] = {}
         # Claim–Evidence Dependency Graph, built as sections are accepted
         self.cedg = CEDG()
+        # Strict-mode rewrite budget per section (max 1 retry)
+        self._strict_retries: Dict[int, int] = {}
         # Phase checkpoints: outline → sections → post_process
         self._phase: str = 'outline'
         # Section-level progress counter
         self._section_index_done: int = 0
-        # Post-process sub-stages: 0-image, 1-abstract/title, 2-cover, 3-reference, 4-render
+        # Post-process sub-stages: 0-image, 1-abstract/title, 2-cover,
+        # 3-reference, 4-verify, 5-render
         self._post_stage: int = 0
         
 
@@ -696,7 +700,8 @@ class ReportGenerator(BaseAgent):
           1: add abstract and title
           2: add cover/basic data page
           3: add reference data section
-          4: render to docx
+          4: typed verification over the CEDG (marking | strict)
+          5: render to docx
         """
         current_state = {
             'phase': 'post_process',
@@ -763,55 +768,163 @@ class ReportGenerator(BaseAgent):
             await self.save(state=current_state, checkpoint_name='report_latest.pkl')
             self.logger.info("[Phase2] Step 3 done, checkpoint saved")
 
-        # 4 Render to docx
+        # 4 Typed verification over the CEDG (marking | strict)
         if self._post_stage <= 4:
-            self.logger.info("[Phase2] Step 4: render report to docx")
-            working_dir = self.config.config['working_dir']
-            md_path = os.path.join(working_dir, f'{report.title}.md')
-            docx_path = os.path.join(working_dir, f'{report.title}.docx')
-            content = report.content
-            content = content.replace("```markdown", "").replace("```", "")
-            with open(md_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            media_dir = os.path.join(working_dir, "media")
-            reference_doc = self.config.config['reference_doc_path']
-            pandoc_cmd = [
-                "pandoc",
-                md_path,
-                "-o",
-                docx_path,
-                "--standalone",
-                "--toc",
-                "--toc-depth=3",
-                f"--resource-path={working_dir}",
-                f"--reference-doc={reference_doc}"
-            ]
-            if os.path.exists(media_dir):
-                pandoc_cmd.append(f"--extract-media={media_dir}")
-            print(" ".join(pandoc_cmd))
-            env = os.environ.copy()
-            env['PYTHONIOENCODING'] = 'utf-8'
-            subprocess.run(pandoc_cmd, check=True, capture_output=True, text=True, encoding='utf-8', env=env)
-            
-            # Validate output is non-empty
-            if not os.path.exists(md_path) or os.path.getsize(md_path) == 0:
-                self.logger.error(
-                    f"Report output is empty: {md_path}. "
-                    "This usually means sections produced no content. "
-                    "Check section generation logs for errors."
-                )
-
-            pdf_path = docx_path.replace(".docx", ".pdf")
-            try:
-                docx2pdf.convert(docx_path, pdf_path)
-            except Exception as e:
-                self.logger.error(f"Failed to convert docx to pdf: {e}", exc_info=True)
+            self.logger.info("[Phase2] Step 4: typed verification (CEDG)")
+            report = await self._verify_stage(input_data, report)
             self._post_stage = 5
-            current_state['rendered_md'] = md_path
-            current_state['rendered_docx'] = docx_path
+            current_state['report_obj_stage4'] = copy.deepcopy(report)
+            current_state['report_obj'] = report
+            current_state['post_stage'] = self._post_stage
+            await self.save(state=current_state, checkpoint_name='report_latest.pkl')
+            self.logger.info("[Phase2] Step 4 done, checkpoint saved")
+
+        # 5 Render to docx
+        if self._post_stage <= 5:
+            self.logger.info("[Phase2] Step 5: render report to docx")
+            report = await self._render_report(input_data, report)
+            self._post_stage = 6
+            current_state['rendered'] = True
             current_state['finished'] = True
             await self.save(state=current_state, checkpoint_name='report_latest.pkl')
-            self.logger.info(f"[Phase2] Step 4 done, rendered files: md={md_path}, docx={docx_path}, pdf={pdf_path}")
+        return report
+
+    async def _render_report(self, input_data, report):
+        """Render the report to md/docx/pdf on disk (post-stage 5)."""
+        working_dir = self.config.config['working_dir']
+        md_path = os.path.join(working_dir, f'{report.title}.md')
+        docx_path = os.path.join(working_dir, f'{report.title}.docx')
+        content = report.content
+        content = content.replace("```markdown", "").replace("```", "")
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        media_dir = os.path.join(working_dir, "media")
+        reference_doc = self.config.config['reference_doc_path']
+        pandoc_cmd = [
+            "pandoc",
+            md_path,
+            "-o",
+            docx_path,
+            "--standalone",
+            "--toc",
+            "--toc-depth=3",
+            f"--resource-path={working_dir}",
+            f"--reference-doc={reference_doc}"
+        ]
+        if os.path.exists(media_dir):
+            pandoc_cmd.append(f"--extract-media={media_dir}")
+        print(" ".join(pandoc_cmd))
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        subprocess.run(pandoc_cmd, check=True, capture_output=True, text=True, encoding='utf-8', env=env)
+
+        # Validate output is non-empty
+        if not os.path.exists(md_path) or os.path.getsize(md_path) == 0:
+            self.logger.error(
+                f"Report output is empty: {md_path}. "
+                "This usually means sections produced no content. "
+                "Check section generation logs for errors."
+            )
+
+        pdf_path = docx_path.replace(".docx", ".pdf")
+        try:
+            docx2pdf.convert(docx_path, pdf_path)
+        except Exception as e:
+            self.logger.error(f"Failed to convert docx to pdf: {e}", exc_info=True)
+        self.logger.info(f"[Phase2] rendered files: md={md_path}, docx={docx_path}, pdf={pdf_path}")
+        return report
+
+    async def _verify_stage(self, input_data, report):
+        """Post-stage 4: typed verification of CEDG claims.
+
+        marking (default): failed claims get an inline [待核实] mark and their
+        kappa decays (recorded in cedg.json). strict: sections containing
+        failed claims are sent back through section writing once (max 1
+        retry), then re-verified; still-failing claims are marked.
+        """
+        verify_mode = self.config.config.get('verify_mode', 'marking')
+        eval_globals = {}
+        if self.enable_code and hasattr(self, 'code_executor'):
+            eval_globals = self.code_executor.globals
+        results = run_verification(
+            self.cedg, getattr(self, 'var_registry', {}), eval_globals
+        )
+        failed = {cid for cid, outcome in results.items() if outcome == 'failed'}
+        self.logger.info(
+            f"[Verify] mode={verify_mode}, claims={len(results)}, "
+            f"failed={len(failed)}, verified={sum(1 for o in results.values() if o == 'verified')}"
+        )
+
+        if failed and verify_mode == 'strict':
+            report = await self._rewrite_failed_sections(input_data, report, failed)
+            results = run_verification(
+                self.cedg, getattr(self, 'var_registry', {}), eval_globals
+            )
+            failed = {cid for cid, outcome in results.items() if outcome == 'failed'}
+
+        if failed:
+            self._mark_failed_claims(report, failed)
+        return report
+
+    def _mark_failed_claims(self, report, failed_cids: set):
+        """Inline [待核实] marks + kappa decay for failed claims (marking mode)."""
+        failed_vars = set()
+        for cid in failed_cids:
+            claim = self.cedg.claims.get(cid)
+            if claim is not None:
+                claim.kappa = max(0.0, claim.kappa * 0.5)
+                failed_vars.update(claim.var_names)
+
+        marked_sections = set()
+        for section in report.sections:
+            if section._content is None:
+                continue
+            new_content = []
+            for para in section._content:
+                if any(f'⟨VAR:{var}⟩' in para for var in failed_vars):
+                    para = para.rstrip() + ' [待核实]'
+                    marked_sections.add(section.title)
+                new_content.append(para)
+            section._content = new_content
+        if marked_sections:
+            self.logger.warning(
+                f"[Verify] marked [待核实] in {len(marked_sections)} section(s): "
+                f"{sorted(marked_sections)}"
+            )
+
+    async def _rewrite_failed_sections(self, input_data, report, failed_cids: set):
+        """strict mode: re-run section writing for sections with failed claims."""
+        section_idxs = set()
+        for cid in failed_cids:
+            try:
+                section_idxs.add(int(cid.split('-')[0][1:]) - 1)
+            except (ValueError, IndexError):
+                continue
+
+        for idx in sorted(section_idxs):
+            if idx < 0 or idx >= len(report.sections):
+                continue
+            if self._strict_retries.get(idx, 0) >= 1:
+                continue  # max one rewrite per section, no loops
+            self._strict_retries[idx] = self._strict_retries.get(idx, 0) + 1
+            section = report.sections[idx]
+            self.logger.info(f"[Verify][strict] rewriting section {idx + 1}")
+            # drop this section's old claims/edges before re-writing
+            prefix = f"S{idx + 1:02d}-"
+            old_cids = [c for c in list(self.cedg.claims) if c.startswith(prefix)]
+            for cid in old_cids:
+                del self.cedg.claims[cid]
+            self.cedg.edges = [e for e in self.cedg.edges if e[1] not in old_cids]
+            self._draft_reject_counts[idx] = 0
+
+            section_input_data = input_data.copy()
+            section_input_data['section_outline'] = section.outline
+            await self._write_section(
+                idx, section, section_input_data,
+                max_iterations=input_data.get('max_iterations', 10),
+                stop_words=[], echo=False, resume=False,
+                checkpoint_name=f'section_{idx}_verify.pkl',
+            )
         return report
 
     def _get_persist_extra_state(self) -> Dict[str, Any]:
@@ -826,6 +939,7 @@ class ReportGenerator(BaseAgent):
             'section_claims': getattr(self, 'section_claims', {}),
             'current_section_idx': getattr(self, '_current_section_idx', None),
             'draft_reject_counts': getattr(self, '_draft_reject_counts', {}),
+            'strict_retries': getattr(self, '_strict_retries', {}),
             'cedg': getattr(self, 'cedg', None),
         }
 
@@ -860,6 +974,7 @@ class ReportGenerator(BaseAgent):
         if extra.get('current_section_idx') is not None or state.get('current_section_idx') is not None:
             self._current_section_idx = extra.get('current_section_idx', state.get('current_section_idx'))
         self._draft_reject_counts = extra.get('draft_reject_counts') or state.get('draft_reject_counts') or {}
+        self._strict_retries = extra.get('strict_retries') or state.get('strict_retries') or {}
         restored_cedg = extra.get('cedg') or state.get('cedg')
         if isinstance(restored_cedg, CEDG):
             self.cedg = restored_cedg
@@ -873,6 +988,42 @@ class ReportGenerator(BaseAgent):
         else:
             self.enable_chart = True
     
+    async def _write_section(self, idx, section, section_input_data,
+                             max_iterations, stop_words, echo, resume,
+                             checkpoint_name) -> str:
+        """Run one section through the agentic writing loop + final polish.
+
+        Shared by the Phase 1 loop and strict-mode verification rewrites.
+        Accepted claims land on the CEDG via the draft gate.
+        """
+        self._current_section_idx = idx
+        # Prepare executor with data access functions for agentic workflow
+        await self._prepare_executor()
+        section_result = await super().async_run(
+            input_data=section_input_data,
+            max_iterations=max_iterations,
+            stop_words=stop_words,
+            echo=echo,
+            resume=resume,
+            checkpoint_name=checkpoint_name,
+        )
+        draft_section = section_result['final_result']
+        self.logger.debug(f"[Phase1] Draft section length={len(draft_section)}")
+
+        # Final polish for the section content
+        final_section = await self._final_polish(section_input_data, draft_section)
+        self.logger.debug(f"[Phase1] Final section length={len(final_section)}")
+        self.memory.add_log(
+            id=self.id,
+            type=self.type,
+            input_data=section_input_data,
+            output_data=section_result,
+            error=False,
+            note=f"Report generator executed successfully"
+        )
+        section.set_content(final_section)
+        return final_section
+
     async def _prepare_outline_prompt(self, input_data):
         max_iterations = input_data.get('max_iterations', 10)
         outline_template_path = self.config.config.get('outline_template_path', None)
@@ -1042,36 +1193,17 @@ class ReportGenerator(BaseAgent):
                     continue
                 section_input_data = input_data.copy()
                 section_input_data['section_outline'] = section.outline
-                self._current_section_idx = idx
                 self.logger.info(f"[Phase1] Section {idx+1}/{len(report.sections)} start")
-                
-                # Prepare executor with data access functions for agentic workflow
-                await self._prepare_executor()
-                
+
                 # Each section run has its own checkpoint for resume support
-                section_result = await super().async_run(
-                    input_data=section_input_data,
+                await self._write_section(
+                    idx, section, section_input_data,
                     max_iterations=max_iterations,
                     stop_words=stop_words,
                     echo=echo,
                     resume=resume and idx == start_index,
-                    checkpoint_name=f'section_{idx}.pkl'
+                    checkpoint_name=f'section_{idx}.pkl',
                 )
-                draft_section = section_result['final_result']
-                self.logger.debug(f"[Phase1] Draft section length={len(draft_section)}")
-                
-                # Final polish for the section content
-                final_section = await self._final_polish(section_input_data, draft_section)
-                self.logger.debug(f"[Phase1] Final section length={len(final_section)}")
-                self.memory.add_log(
-                    id=self.id,
-                    type=self.type,
-                    input_data=section_input_data,
-                    output_data=section_result,
-                    error=False,
-                    note=f"Report generator executed successfully"
-                )
-                section.set_content(final_section) 
                 # Save global progress after each section to resume later
                 await self.save(
                     state={

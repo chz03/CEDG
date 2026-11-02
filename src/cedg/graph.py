@@ -23,6 +23,7 @@ class ClaimNode:
     var_names: list = field(default_factory=list)
     kappa: float = 1.0
     nu: str = "pending"   # pending / verified / failed / infer / unresolved
+    premises: list = field(default_factory=list)   # cids of evidenced claims an infer claim rests on
 
 
 @dataclass
