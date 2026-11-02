@@ -159,11 +159,13 @@ class ReportGenerator(BaseAgent):
         analysis_result_list = self.memory.get_analysis_result()
         data_info = "\n\n## Available Datas\n\n"
         for idx, item in enumerate(collect_data_list):
-            data_info += f"**Data ID {idx}:**\n{item.brief_str()}\n\n"
-        data_info += "\nYou can access these datasets using `get_data(data_id)` in your code.\n"
+            eid = self.memory.get_eid(item)
+            data_info += f"**Evidence [{eid}] (data_id={idx}):**\n{item.brief_str()}\n\n"
+        data_info += "\nYou can access these datasets using `get_data(data_id)` in your code. Cite them in the draft as `[Source:E…]` using the Evidence ID above.\n"
         data_info += "\n\n## Available Analysis Reports\n\n"
         for idx, item in enumerate(analysis_result_list):
-            data_info += f"**Analysis Report ID {idx}:**\n{item.brief_str()}\n\n"
+            eid = self.memory.get_eid(item)
+            data_info += f"**Evidence [{eid}] (analysis_id={idx}):**\n{item.brief_str()}\n\n"
         data_info += "\nYou can access these analysis reports using `get_analysis_result(analysis_result_id)` in your code.\n"
         
         if self.enable_chart:
