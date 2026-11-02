@@ -5,6 +5,10 @@ market: 'A'  # A (Chinese A-share), HK (Hong Kong), US (United States)
 output_dir: "./outputs/exp-v1"
 language: 'zh' # zh,en
 
+# CEDG renovation switches
+citation_mode: pointer   # pointer = direct E-ID translation | legacy = embedding post-hoc matching (ablation control)
+verify_mode: marking     # strict = bounce failed sections back to Phase 1 | marking = inline [待核实] marks + kappa decay
+
 # Per-service rate limits (seconds between consecutive calls)
 rate_limits:
   search_engines: 1.0

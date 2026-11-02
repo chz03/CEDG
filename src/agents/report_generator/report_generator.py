@@ -559,6 +559,11 @@ class ReportGenerator(BaseAgent):
     async def _add_reference(self, report):
         """
         Append the reference-data section and replace placeholder citations.
+
+        citation_mode == 'pointer' (default): [Source:E012] is translated
+        directly via the evidence registry — no similarity search, no top-1
+        fallback. citation_mode == 'legacy': the original embedding/BM25
+        post-hoc matching, kept verbatim as the ablation control.
         """
         collect_data_list = self.memory.get_collect_data() # only use data, without analysis result
         all_data = []
@@ -578,59 +583,98 @@ class ReportGenerator(BaseAgent):
             if content not in [ii['content'] for ii in all_data]:
                 all_data.append({
                     'name': name,
-                    'content': content 
+                    'content': content
                 })
         self.logger.info(f"Total data for reference: {len(all_data)}")
-        
-        total_corpus = [item['name'] for item in all_data]
-        index = IndexBuilder(config=self.config, embedding_model=self.use_embedding_name, working_dir=self.working_dir)
-        await index._build_index(total_corpus)
 
+        citation_mode = self.config.config.get('citation_mode', 'pointer')
         total_cited_dict = {}
-        for section in report.sections:
-            # Optional: log section length
-            try:
-                self.logger.debug(f"Processing section, content length={len(section.content)}")
-            except Exception:
-                pass
-            section_new_content = []
-            for p_paragraph in section._content:
-                content = p_paragraph
-                # Locate citation placeholders
-                match_list = re.findall(r'\[[Ss]ource[：:]\s*(.*?)\]',content)
-                self.logger.debug(f"Match list: {match_list}")
-                for match_item in match_list:
-                    # Use BM25/embedding search
-                    search_result = await index.search(match_item, top_k=5)
-                    score_list = [item['score'] for item in search_result]
-                    id_list = [item['id'] for item in search_result]  # Get actual data indices
-                    self.logger.debug(f"Score list: {score_list}")
-                    self.logger.debug(f"ID list: {id_list}")
-                    # Sort by score (descending) and get corresponding indices
-                    sorted_idx = np.argsort(score_list)[::-1]
-                    score_list = np.array(score_list)
-                    score_list = np.exp(score_list) / np.sum(np.exp(score_list))
 
-                    cite_list = []
-                    for pos in sorted_idx:
-                        pos = int(pos)
-                        actual_idx = id_list[pos]  # Get the actual data index
-                        if score_list[pos] > 0.2 and len(cite_list) < 5:
-                            cite_list.append(actual_idx)
-                    if len(cite_list) == 0:
-                        # If no item meets threshold, use the top result
-                        cite_list.append(id_list[sorted_idx[0]])
-                    new_cite_list = []
-                    for idx in cite_list:
+        if citation_mode == 'pointer':
+            # Direct translation: every [Source:E…] becomes [n] via the
+            # evidence registry; numbering dedups by reference entry.
+            for section in report.sections:
+                section_new_content = []
+                for p_paragraph in section._content:
+                    content = p_paragraph
+                    match_list = re.findall(r'\[Source:(E\d{3})\]', content)
+                    for eid in match_list:
+                        item = self.memory.get_evidence_by_eid(eid)
+                        if item is not None:
+                            if isinstance(item, ClickResult):
+                                url = item.link
+                                title = self.memory.get_url_title(url)
+                                if title == "":
+                                    title = item.name
+                                ref_content = f"{title}\n{url}"
+                            else:
+                                ref_content = f"{item.name}\n{item.source}"
+                            ref_name = item.name + '\n' + item.description
+                        else:
+                            # dangling E-ID from a force-accepted draft: keep a
+                            # visible audit marker instead of a wrong citation
+                            ref_content = f"<missing evidence {eid}>"
+                            ref_name = eid
+                        if ref_content not in [ii['content'] for ii in all_data]:
+                            all_data.append({'name': ref_name, 'content': ref_content})
+                        idx = next(i for i, ii in enumerate(all_data)
+                                   if ii['content'] == ref_content)
                         if idx not in total_cited_dict:
                             total_cited_dict[idx] = len(total_cited_dict) + 1
-                    new_cite_list = [total_cited_dict[idx] for idx in cite_list]
-                    # Build the regex for replacement
-                    pattern_to_replace = r'\[[Ss]ource[：:]\s*' + re.escape(match_item) + r'\]'
-                    content = re.sub(pattern_to_replace, f'[{",".join([str(item) for item in new_cite_list])}]', content)
+                        content = content.replace(
+                            f'[Source:{eid}]', f'[{total_cited_dict[idx]}]', 1
+                        )
+                    section_new_content.append(content)
+                section._content = section_new_content
+        else:
+            total_corpus = [item['name'] for item in all_data]
+            index = IndexBuilder(config=self.config, embedding_model=self.use_embedding_name, working_dir=self.working_dir)
+            await index._build_index(total_corpus)
 
-                section_new_content.append(content)
-            section._content = section_new_content
+            for section in report.sections:
+                # Optional: log section length
+                try:
+                    self.logger.debug(f"Processing section, content length={len(section.content)}")
+                except Exception:
+                    pass
+                section_new_content = []
+                for p_paragraph in section._content:
+                    content = p_paragraph
+                    # Locate citation placeholders
+                    match_list = re.findall(r'\[[Ss]ource[：:]\s*(.*?)\]',content)
+                    self.logger.debug(f"Match list: {match_list}")
+                    for match_item in match_list:
+                        # Use BM25/embedding search
+                        search_result = await index.search(match_item, top_k=5)
+                        score_list = [item['score'] for item in search_result]
+                        id_list = [item['id'] for item in search_result]  # Get actual data indices
+                        self.logger.debug(f"Score list: {score_list}")
+                        self.logger.debug(f"ID list: {id_list}")
+                        # Sort by score (descending) and get corresponding indices
+                        sorted_idx = np.argsort(score_list)[::-1]
+                        score_list = np.array(score_list)
+                        score_list = np.exp(score_list) / np.sum(np.exp(score_list))
+
+                        cite_list = []
+                        for pos in sorted_idx:
+                            pos = int(pos)
+                            actual_idx = id_list[pos]  # Get the actual data index
+                            if score_list[pos] > 0.2 and len(cite_list) < 5:
+                                cite_list.append(actual_idx)
+                        if len(cite_list) == 0:
+                            # If no item meets threshold, use the top result
+                            cite_list.append(id_list[sorted_idx[0]])
+                        new_cite_list = []
+                        for idx in cite_list:
+                            if idx not in total_cited_dict:
+                                total_cited_dict[idx] = len(total_cited_dict) + 1
+                        new_cite_list = [total_cited_dict[idx] for idx in cite_list]
+                        # Build the regex for replacement
+                        pattern_to_replace = r'\[[Ss]ource[：:]\s*' + re.escape(match_item) + r'\]'
+                        content = re.sub(pattern_to_replace, f'[{",".join([str(item) for item in new_cite_list])}]', content)
+
+                    section_new_content.append(content)
+                section._content = section_new_content
 
 
         reference_str = "## Reference Data Sources\n\n"
